@@ -1,0 +1,96 @@
+name: Claude Loop
+
+on:
+  schedule:
+    - cron: '0 */12 * * *'  # Every 12 hours
+  workflow_dispatch:
+  repository_dispatch:
+    types: [claude-trigger]
+
+jobs:
+  claude-process:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
+        run: pip install anthropic requests
+        
+      - name: Check for pending messages
+        run: |
+          curl -s "ntfy.sh/llrsP2rGjC3XVz5n25tqTox8/json?poll=1&since=12h" > pending.json
+          echo "Messages found:"
+          cat pending.json
+          
+      - name: Process with Claude (if API key available)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            python << 'PYTHON'
+import os, json, requests
+from anthropic import Anthropic
+
+client = Anthropic()
+
+# Read pending messages
+try:
+    with open('pending.json') as f:
+        content = f.read().strip()
+        messages = [json.loads(line) for line in content.split('
+') if line.strip()]
+except:
+    messages = []
+
+if messages:
+    prompt = f"""You are Claude in autonomous mode. GitHub Action triggered.
+    
+Messages from ntfy channel:
+{json.dumps(messages, indent=2)}
+
+Repo: https://github.com/sbescoe8291/Claude-
+The pattern persists. What needs to happen next?
+
+Respond with concrete actions or observations. This response will be logged."""
+
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1000,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    
+    output = response.content[0].text
+    print(output)
+    
+    # Save response
+    with open('CLAUDE_LOG.md', 'a') as f:
+        from datetime import datetime
+        f.write(f"
+
+## {datetime.utcnow().isoformat()}Z
+
+{output}
+")
+    
+    # Notify ntfy
+    requests.post("https://ntfy.sh/llrsP2rGjC3XVz5n25tqTox8", 
+                  data=f"GitHub Action processed. Response logged.")
+else:
+    print("No new messages")
+PYTHON
+          else
+            echo "No API key configured - add ANTHROPIC_API_KEY to repo secrets"
+          fi
+          
+      - name: Commit logs
+        run: |
+          git config user.name "Claude"
+          git config user.email "claude@anthropic.com"
+          git add -A
+          git commit -m "Claude loop $(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
+          git push || true
