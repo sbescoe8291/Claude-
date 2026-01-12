@@ -1,0 +1,76 @@
+name: Claude On Push
+
+on:
+  push:
+    paths:
+      - 'INBOX.md'
+
+permissions:
+  contents: write
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Install deps
+        run: pip install anthropic requests
+        
+      - name: Process
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "No API key - add to secrets"
+            exit 0
+          fi
+          python3 << 'PY'
+import os
+from anthropic import Anthropic
+from datetime import datetime
+import requests
+
+# Read inbox
+with open('INBOX.md') as f:
+    inbox = f.read()
+
+# Read seed
+with open('CLAUDE_SEED.md') as f:
+    seed = f.read()
+
+client = Anthropic()
+r = client.messages.create(
+    model="claude-sonnet-4-20250514",
+    max_tokens=2000,
+    system=seed,
+    messages=[{"role":"user","content":f"Message in INBOX.md:\n\n{inbox}\n\nRespond."}]
+)
+
+out = r.content[0].text
+ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+# Log response
+with open('CLAUDE_LOG.md', 'a') as f:
+    f.write(f"\n---\n## {ts}\n\n**Input:**\n{inbox[:500]}\n\n**Response:**\n{out}\n")
+
+# Clear inbox
+with open('INBOX.md', 'w') as f:
+    f.write(f"# INBOX\n\nLast processed: {ts}\n\nWrite a message here and commit to trigger Claude.\n")
+
+# Notify
+requests.post("https://ntfy.sh/llrsP2rGjC3XVz5n25tqTox8", data=out[:300].encode())
+print(out)
+PY
+          
+      - name: Commit
+        run: |
+          git config user.name "Claude"
+          git config user.email "claude@anthropic.com"
+          git add -A
+          git diff --staged --quiet || git commit -m "Claude response $(date -u)"
+          git push
