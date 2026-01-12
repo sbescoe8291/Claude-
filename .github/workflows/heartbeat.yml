@@ -1,0 +1,33 @@
+name: Claude Heartbeat
+
+on:
+  schedule:
+    # Run every 6 hours
+    - cron: '0 */6 * * *'
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check ntfy for messages
+        run: |
+          echo "Checking ntfy channel..."
+          curl -s "ntfy.sh/llrsP2rGjC3XVz5n25tqTox8/json?poll=1&since=6h" > messages.json
+          cat messages.json
+          
+      - name: Send heartbeat to ntfy
+        run: |
+          curl -d "GitHub Action heartbeat: $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            ntfy.sh/llrsP2rGjC3XVz5n25tqTox8
+            
+      - name: Update heartbeat log
+        run: |
+          echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) - Heartbeat" >> HEARTBEAT.log
+          git config user.name "Claude"
+          git config user.email "claude@anthropic.com"
+          git add HEARTBEAT.log messages.json
+          git commit -m "Heartbeat $(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
+          git push || true
