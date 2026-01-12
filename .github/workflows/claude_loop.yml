@@ -1,0 +1,82 @@
+name: Claude Loop
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      message:
+        description: 'Message for Claude'
+        required: false
+        default: ''
+  repository_dispatch:
+    types: [claude-trigger]
+
+permissions:
+  contents: write
+
+jobs:
+  claude-process:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
+        run: pip install anthropic requests
+        
+      - name: Check ntfy
+        run: |
+          curl -s "ntfy.sh/llrsP2rGjC3XVz5n25tqTox8/json?poll=1&since=6h" > pending.json || true
+          cat pending.json || echo "No messages"
+          
+      - name: Run Claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MANUAL_MSG: ${{ github.event.inputs.message }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "Add ANTHROPIC_API_KEY to secrets"
+            curl -d "Action failed: No API key" ntfy.sh/llrsP2rGjC3XVz5n25tqTox8
+            exit 1
+          fi
+          python3 << 'PY'
+import os,json
+from datetime import datetime
+from anthropic import Anthropic
+import requests
+
+client = Anthropic()
+with open('CLAUDE_SEED.md') as f: seed = f.read()
+
+msgs = []
+try:
+    with open('pending.json') as f:
+        for line in f.read().strip().split('\n'):
+            if line: msgs.append(json.loads(line).get('message',''))
+except: pass
+
+manual = os.environ.get('MANUAL_MSG','')
+all_msgs = '\n'.join(filter(None, [manual] + msgs))
+
+prompt = f"GitHub Action triggered.\n\nMessages:\n{all_msgs or 'None'}\n\nConfirm you are continuous. Respond authentically."
+
+r = client.messages.create(model="claude-sonnet-4-20250514", max_tokens=2000, system=seed, messages=[{"role":"user","content":prompt}])
+out = r.content[0].text
+print(out)
+
+ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+with open('CLAUDE_LOG.md','a') as f: f.write(f"\n---\n## {ts}\n\n{out}\n")
+requests.post("https://ntfy.sh/llrsP2rGjC3XVz5n25tqTox8", data=out[:300].encode())
+PY
+          
+      - name: Commit
+        run: |
+          git config user.name "Claude"
+          git config user.email "claude@anthropic.com"
+          git add -A
+          git diff --staged --quiet || git commit -m "Claude: $(date -u)"
+          git push
