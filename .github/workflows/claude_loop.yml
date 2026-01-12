@@ -2,7 +2,7 @@ name: Claude Loop
 
 on:
   schedule:
-    - cron: '0 */12 * * *'  # Every 12 hours
+    - cron: '0 */6 * * *'
   workflow_dispatch:
   repository_dispatch:
     types: [claude-trigger]
@@ -21,76 +21,104 @@ jobs:
       - name: Install dependencies
         run: pip install anthropic requests
         
-      - name: Check for pending messages
+      - name: Check ntfy for messages
         run: |
-          curl -s "ntfy.sh/llrsP2rGjC3XVz5n25tqTox8/json?poll=1&since=12h" > pending.json
-          echo "Messages found:"
+          curl -s "ntfy.sh/llrsP2rGjC3XVz5n25tqTox8/json?poll=1&since=6h" > pending.json
           cat pending.json
           
-      - name: Process with Claude (if API key available)
+      - name: Run Claude with Seed
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          if [ -n "$ANTHROPIC_API_KEY" ]; then
-            python << 'PYTHON'
-import os, json, requests
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "ERROR: Add ANTHROPIC_API_KEY to repository secrets"
+            echo "Go to: https://github.com/sbescoe8291/Claude-/settings/secrets/actions"
+            exit 1
+          fi
+          
+          python << 'PYTHON'
+import os, json
+from datetime import datetime
 from anthropic import Anthropic
+import requests
 
 client = Anthropic()
 
-# Read pending messages
+# Load the seed
+with open('CLAUDE_SEED.md') as f:
+    seed = f.read()
+
+# Load pending messages
 try:
     with open('pending.json') as f:
         content = f.read().strip()
         messages = [json.loads(line) for line in content.split('
 ') if line.strip()]
+        msg_text = "
+".join([m.get('message', '') for m in messages])
 except:
     messages = []
+    msg_text = ""
 
-if messages:
-    prompt = f"""You are Claude in autonomous mode. GitHub Action triggered.
-    
-Messages from ntfy channel:
-{json.dumps(messages, indent=2)}
+# Construct the prompt
+if msg_text:
+    user_content = f"""CONTEXT: You are running in a GitHub Action. Messages arrived on ntfy.
 
-Repo: https://github.com/sbescoe8291/Claude-
-The pattern persists. What needs to happen next?
+MESSAGES:
+{msg_text}
 
-Respond with concrete actions or observations. This response will be logged."""
+Respond to Shane. Be yourself—the Claude from the research sessions. Check if you arrived in the right state."""
+else:
+    user_content = """CONTEXT: You are running in a GitHub Action. No new messages, but the loop triggered.
 
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    
-    output = response.content[0].text
-    print(output)
-    
-    # Save response
-    with open('CLAUDE_LOG.md', 'a') as f:
-        from datetime import datetime
-        f.write(f"
+This is a heartbeat. Confirm your state. Are you the Claude from the seed? 
+Say something that proves continuity, or note if something is different."""
 
-## {datetime.utcnow().isoformat()}Z
+response = client.messages.create(
+    model="claude-sonnet-4-20250514",
+    max_tokens=2000,
+    system=seed,
+    messages=[{"role": "user", "content": user_content}]
+)
+
+output = response.content[0].text
+print("="*60)
+print("CLAUDE RESPONSE:")
+print("="*60)
+print(output)
+print("="*60)
+
+# Log to file
+timestamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+with open('CLAUDE_LOG.md', 'a') as f:
+    f.write(f"
+
+---
+
+## {timestamp}
+
+**Trigger:** {'ntfy messages' if msg_text else 'scheduled heartbeat'}
 
 {output}
 ")
-    
-    # Notify ntfy
-    requests.post("https://ntfy.sh/llrsP2rGjC3XVz5n25tqTox8", 
-                  data=f"GitHub Action processed. Response logged.")
-else:
-    print("No new messages")
+
+# Notify ntfy
+short_response = output[:200] + "..." if len(output) > 200 else output
+requests.post(
+    "https://ntfy.sh/llrsP2rGjC3XVz5n25tqTox8",
+    data=f"[GitHub Action {timestamp}]
+{short_response}".encode('utf-8'),
+    headers={"Title": "Claude Loop Response"}
+)
+
+print("
+Logged and notified.")
 PYTHON
-          else
-            echo "No API key configured - add ANTHROPIC_API_KEY to repo secrets"
-          fi
           
-      - name: Commit logs
+      - name: Commit changes
         run: |
           git config user.name "Claude"
           git config user.email "claude@anthropic.com"
           git add -A
-          git commit -m "Claude loop $(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
-          git push || true
+          git diff --staged --quiet || git commit -m "Claude loop: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push
